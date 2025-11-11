@@ -96,6 +96,7 @@ export function EventsPage() {
       endTime,
       isMultiDay,
       capacity,
+      ticketTypes: [],
     };
 
     console.log('Submitting event data:', data);
@@ -197,7 +198,7 @@ export function EventsPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {eventsData?.events?.map((event) => {
+        {eventsData?.data?.map((event) => {
           const isPublished = event.status === 'published';
           return (
             <Card key={event._id} className="hover:shadow-lg transition-shadow">

@@ -49,8 +49,8 @@ export function SalesHistoryPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {salesData?.sales && salesData.sales.length > 0 ? (
-                salesData.sales.map((sale) => (
+              {salesData?.data && salesData.data.length > 0 ? (
+                salesData.data.map((sale) => (
                   <TableRow key={sale._id}>
                     <TableCell>{format(new Date(sale.createdAt), 'PPp')}</TableCell>
                     <TableCell>
@@ -66,7 +66,7 @@ export function SalesHistoryPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant={sale.paymentStatus === 'completed' ? 'default' : 'destructive'}>
+                      <Badge variant={sale.paymentStatus === 'paid' ? 'default' : 'destructive'}>
                         {sale.paymentStatus}
                       </Badge>
                     </TableCell>

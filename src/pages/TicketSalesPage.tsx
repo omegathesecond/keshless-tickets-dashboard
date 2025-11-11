@@ -26,7 +26,7 @@ export function TicketSalesPage() {
     queryFn: () => apiClient.events.getEvents({ status: 'published', limit: 100 }),
   });
 
-  const selectedEvent = eventsData?.events?.find(e => e._id === formData.eventId);
+  const selectedEvent = eventsData?.data?.find(e => e._id === formData.eventId);
   const selectedTicketType = selectedEvent?.ticketTypes.find(
     t => t._id === formData.ticketTypeId
   );
@@ -84,7 +84,7 @@ export function TicketSalesPage() {
                     <SelectValue placeholder="Choose an event" />
                   </SelectTrigger>
                   <SelectContent>
-                    {eventsData?.events?.map((event) => (
+                    {eventsData?.data?.map((event) => (
                       <SelectItem key={event._id} value={event._id}>
                         {event.name} - {event.venue}
                       </SelectItem>
