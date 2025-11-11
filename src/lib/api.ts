@@ -1,0 +1,630 @@
+import type {
+  LoginCredentials,
+  AuthResponse,
+  AuthUser,
+  Event,
+  EventFormData,
+  EventQueryParams,
+  TicketSale,
+  SellTicketsRequest,
+  SalesQueryParams,
+  ScanRecord,
+  ValidateTicketRequest,
+  CheckInRequest,
+  ValidateTicketResponse,
+  ScanQueryParams,
+  DashboardStats,
+  SalesStats,
+  RevenueStats,
+  EventAnalytics,
+  StatsQueryParams,
+  PaginatedResponse,
+} from '@/types';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
+class ApiClient {
+  private baseUrl: string;
+  private token: string | null;
+  private refreshToken: string | null;
+  private isRefreshing: boolean = false;
+  private refreshPromise: Promise<any> | null = null;
+
+  constructor(baseUrl: string) {
+    this.baseUrl = baseUrl;
+    this.token = localStorage.getItem('keshless_tickets_token');
+    this.refreshToken = localStorage.getItem('keshless_tickets_refresh_token');
+  }
+
+  private getToken(): string | null {
+    const token = localStorage.getItem('keshless_tickets_token');
+    this.token = token;
+    return token;
+  }
+
+  private getRefreshToken(): string | null {
+    const refreshToken = localStorage.getItem('keshless_tickets_refresh_token');
+    this.refreshToken = refreshToken;
+    return refreshToken;
+  }
+
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${this.baseUrl}${endpoint}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...options.headers as Record<string, string>,
+    };
+
+    const token = this.getToken();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    console.log('[ApiClient] Request:', {
+      method: options.method || 'GET',
+      url,
+      hasToken: !!token,
+    });
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers,
+      });
+
+      console.log('[ApiClient] Response:', {
+        status: response.status,
+        ok: response.ok,
+        url,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({
+          message: 'An error occurred',
+        }));
+
+        const errorMessage = error.message || `HTTP ${response.status}: ${response.statusText}`;
+        console.error('[ApiClient] Request failed:', {
+          status: response.status,
+          message: errorMessage,
+          url,
+        });
+
+        // Handle token expiry with automatic refresh
+        if (
+          response.status === 401 &&
+          (errorMessage.includes('Token has expired') || errorMessage.includes('expired')) &&
+          !endpoint.includes('/tickets/auth/refresh') &&
+          !endpoint.includes('/tickets/auth/login') &&
+          this.getRefreshToken()
+        ) {
+          console.log('[ApiClient] Token expired, attempting refresh...');
+
+          try {
+            await this.handleTokenRefresh();
+            console.log('[ApiClient] Retrying request with refreshed token...');
+            return this.request<T>(endpoint, options);
+          } catch (refreshError) {
+            console.error('[ApiClient] Token refresh failed, redirecting to login');
+            throw new Error('Session expired. Please log in again.');
+          }
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      console.log('[ApiClient] Request successful:', { url });
+      return data.data || data;
+    } catch (error: any) {
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        console.error('[ApiClient] Network error:', {
+          message: 'Failed to connect to server',
+          url,
+        });
+        throw new Error('Network error: Unable to connect to server. Please check your internet connection.');
+      }
+      throw error;
+    }
+  }
+
+  setToken(token: string, refreshToken?: string) {
+    console.log('[ApiClient] Setting new token', { hasRefreshToken: !!refreshToken });
+    this.token = token;
+    localStorage.setItem('keshless_tickets_token', token);
+
+    if (refreshToken) {
+      this.refreshToken = refreshToken;
+      localStorage.setItem('keshless_tickets_refresh_token', refreshToken);
+    }
+  }
+
+  clearToken() {
+    console.log('[ApiClient] Clearing tokens');
+    this.token = null;
+    this.refreshToken = null;
+    localStorage.removeItem('keshless_tickets_token');
+    localStorage.removeItem('keshless_tickets_refresh_token');
+  }
+
+  private async handleTokenRefresh(): Promise<void> {
+    if (this.isRefreshing && this.refreshPromise) {
+      console.log('[ApiClient] Refresh already in progress, waiting...');
+      await this.refreshPromise;
+      return;
+    }
+
+    const refreshToken = this.getRefreshToken();
+    if (!refreshToken) {
+      console.error('[ApiClient] No refresh token available');
+      throw new Error('No refresh token available');
+    }
+
+    this.isRefreshing = true;
+    console.log('[ApiClient] Starting token refresh...');
+
+    this.refreshPromise = (async () => {
+      try {
+        const url = `${this.baseUrl}/tickets/auth/refresh`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ refreshToken }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({
+            message: 'Failed to refresh token',
+          }));
+          throw new Error(error.message || 'Token refresh failed');
+        }
+
+        const data = await response.json();
+        const tokenData = data.data || data;
+
+        console.log('[ApiClient] Token refresh successful');
+        this.setToken(tokenData.accessToken, tokenData.refreshToken);
+
+        this.isRefreshing = false;
+        this.refreshPromise = null;
+      } catch (error: any) {
+        console.error('[ApiClient] Token refresh failed:', error.message);
+        this.isRefreshing = false;
+        this.refreshPromise = null;
+
+        this.clearToken();
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
+        }
+
+        throw error;
+      }
+    })();
+
+    await this.refreshPromise;
+  }
+
+  // Auth endpoints
+  auth = {
+    login: async (credentials: LoginCredentials): Promise<AuthResponse> => {
+      const response = await this.request<AuthResponse>(
+        `/tickets/auth/login`,
+        {
+          method: 'POST',
+          body: JSON.stringify(credentials),
+        }
+      );
+      this.setToken(response.accessToken, response.refreshToken);
+      return response;
+    },
+
+    logout: async (): Promise<void> => {
+      const refreshToken = this.getRefreshToken();
+      await this.request(`/tickets/auth/logout`, {
+        method: 'POST',
+        body: refreshToken ? JSON.stringify({ refreshToken }) : undefined,
+      });
+      this.clearToken();
+    },
+
+    getMe: async (): Promise<AuthUser> => {
+      return this.request<AuthUser>(`/tickets/auth/me`);
+    },
+  };
+
+  // Events endpoints
+  events = {
+    getEvents: async (params?: EventQueryParams): Promise<PaginatedResponse<Event>> => {
+      const query = new URLSearchParams();
+      if (params?.page) query.append('page', params.page.toString());
+      if (params?.limit) query.append('limit', params.limit.toString());
+      if (params?.status) query.append('status', params.status);
+      if (params?.search) query.append('search', params.search);
+
+      return this.request<PaginatedResponse<Event>>(
+        `/tickets/events?${query.toString()}`
+      );
+    },
+
+    getEvent: async (id: string): Promise<Event> => {
+      return this.request<Event>(`/tickets/events/${id}`);
+    },
+
+    createEvent: async (data: EventFormData): Promise<Event> => {
+      return this.request<Event>(`/tickets/events`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    updateEvent: async (id: string, data: Partial<EventFormData>): Promise<Event> => {
+      return this.request<Event>(`/tickets/events/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      });
+    },
+
+    deleteEvent: async (id: string): Promise<void> => {
+      return this.request<void>(`/tickets/events/${id}`, {
+        method: 'DELETE',
+      });
+    },
+
+    publishEvent: async (id: string): Promise<Event> => {
+      return this.request<Event>(`/tickets/events/${id}/publish`, {
+        method: 'PUT',
+      });
+    },
+
+    unpublishEvent: async (id: string): Promise<Event> => {
+      return this.request<Event>(`/tickets/events/${id}/unpublish`, {
+        method: 'PUT',
+      });
+    },
+
+    // Ticket type management
+    addTicketType: async (
+      eventId: string,
+      ticketType: {
+        name: string;
+        description?: string;
+        price: number;
+        quantity: number;
+      }
+    ): Promise<Event> => {
+      return this.request<Event>(`/tickets/events/${eventId}/tickets`, {
+        method: 'POST',
+        body: JSON.stringify(ticketType),
+      });
+    },
+
+    updateTicketType: async (
+      eventId: string,
+      ticketTypeName: string,
+      updates: {
+        name?: string;
+        description?: string;
+        price?: number;
+        quantity?: number;
+      }
+    ): Promise<Event> => {
+      return this.request<Event>(
+        `/tickets/events/${eventId}/tickets/${encodeURIComponent(ticketTypeName)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(updates),
+        }
+      );
+    },
+
+    deleteTicketType: async (eventId: string, ticketTypeName: string): Promise<Event> => {
+      return this.request<Event>(
+        `/tickets/events/${eventId}/tickets/${encodeURIComponent(ticketTypeName)}`,
+        {
+          method: 'DELETE',
+        }
+      );
+    },
+
+    adjustTicketQuantity: async (
+      eventId: string,
+      ticketTypeName: string,
+      adjustment: number
+    ): Promise<Event> => {
+      return this.request<Event>(
+        `/tickets/events/${eventId}/tickets/${encodeURIComponent(ticketTypeName)}/adjust`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ adjustment }),
+        }
+      );
+    },
+
+    markTicketSoldOut: async (
+      eventId: string,
+      ticketTypeName: string,
+      isSoldOut: boolean
+    ): Promise<Event> => {
+      return this.request<Event>(
+        `/tickets/events/${eventId}/tickets/${encodeURIComponent(ticketTypeName)}/sold-out`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ isSoldOut }),
+        }
+      );
+    },
+
+    // Media upload methods
+    uploadPoster: async (eventId: string, file: File): Promise<Event> => {
+      const formData = new FormData();
+      formData.append('poster', file);
+
+      const token = this.getToken();
+      const response = await fetch(`${this.baseUrl}/media/events/${eventId}/poster`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Upload failed' }));
+        throw new Error(error.message || 'Failed to upload poster');
+      }
+
+      const data = await response.json();
+      return data.data;
+    },
+
+    uploadThumbnail: async (eventId: string, file: File): Promise<Event> => {
+      const formData = new FormData();
+      formData.append('thumbnail', file);
+
+      const token = this.getToken();
+      const response = await fetch(`${this.baseUrl}/media/events/${eventId}/thumbnail`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Upload failed' }));
+        throw new Error(error.message || 'Failed to upload thumbnail');
+      }
+
+      const data = await response.json();
+      return data.data;
+    },
+
+    uploadGalleryImages: async (eventId: string, files: File[]): Promise<Event> => {
+      const formData = new FormData();
+      files.forEach(file => {
+        formData.append('gallery', file);
+      });
+
+      const token = this.getToken();
+      const response = await fetch(`${this.baseUrl}/media/events/${eventId}/gallery`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Upload failed' }));
+        throw new Error(error.message || 'Failed to upload gallery images');
+      }
+
+      const data = await response.json();
+      return data.data;
+    },
+
+    uploadQRCode: async (eventId: string, file: File): Promise<Event> => {
+      const formData = new FormData();
+      formData.append('qrcode', file);
+
+      const token = this.getToken();
+      const response = await fetch(`${this.baseUrl}/media/events/${eventId}/qrcode`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Upload failed' }));
+        throw new Error(error.message || 'Failed to upload QR code');
+      }
+
+      const data = await response.json();
+      return data.data;
+    },
+
+    deleteMedia: async (
+      eventId: string,
+      url: string,
+      mediaType: 'poster' | 'thumbnail' | 'gallery' | 'qrcode'
+    ): Promise<Event> => {
+      return this.request<Event>(`/media/events/${eventId}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ url, mediaType }),
+      });
+    },
+
+    listEventMedia: async (eventId: string): Promise<{
+      poster: string | null;
+      thumbnail: string | null;
+      gallery: string[];
+      qrcode: string | null;
+    }> => {
+      const response = await this.request<{
+        eventId: string;
+        media: {
+          poster: string | null;
+          thumbnail: string | null;
+          gallery: string[];
+          qrcode: string | null;
+        };
+      }>(`/media/events/${eventId}/list`);
+      return response.media;
+    },
+  };
+
+  // Sales endpoints
+  sales = {
+    sellTickets: async (data: SellTicketsRequest): Promise<TicketSale> => {
+      return this.request<TicketSale>(`/tickets/sales/sell`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    getSales: async (params?: SalesQueryParams): Promise<PaginatedResponse<TicketSale>> => {
+      const query = new URLSearchParams();
+      if (params?.page) query.append('page', params.page.toString());
+      if (params?.limit) query.append('limit', params.limit.toString());
+      if (params?.eventId) query.append('eventId', params.eventId);
+      if (params?.paymentMethod) query.append('paymentMethod', params.paymentMethod);
+      if (params?.paymentStatus) query.append('paymentStatus', params.paymentStatus);
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+      if (params?.search) query.append('search', params.search);
+
+      return this.request<PaginatedResponse<TicketSale>>(
+        `/tickets/sales?${query.toString()}`
+      );
+    },
+
+    getSale: async (id: string): Promise<TicketSale> => {
+      return this.request<TicketSale>(`/tickets/sales/${id}`);
+    },
+
+    refundTicket: async (ticketId: string, reason: string): Promise<TicketSale> => {
+      return this.request<TicketSale>(`/tickets/sales/${ticketId}/refund`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+    },
+  };
+
+  // Scans endpoints
+  scans = {
+    validateTicket: async (data: ValidateTicketRequest): Promise<ValidateTicketResponse> => {
+      return this.request<ValidateTicketResponse>(`/tickets/scans/validate`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    checkIn: async (data: CheckInRequest): Promise<ScanRecord> => {
+      return this.request<ScanRecord>(`/tickets/scans/check-in`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+
+    getScans: async (params?: ScanQueryParams): Promise<PaginatedResponse<ScanRecord>> => {
+      const query = new URLSearchParams();
+      if (params?.page) query.append('page', params.page.toString());
+      if (params?.limit) query.append('limit', params.limit.toString());
+      if (params?.eventId) query.append('eventId', params.eventId);
+      if (params?.status) query.append('status', params.status);
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+
+      return this.request<PaginatedResponse<ScanRecord>>(
+        `/tickets/scans?${query.toString()}`
+      );
+    },
+  };
+
+  // Analytics endpoints
+  analytics = {
+    getDashboardStats: async (params?: StatsQueryParams): Promise<DashboardStats> => {
+      const query = new URLSearchParams();
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+      if (params?.eventId) query.append('eventId', params.eventId);
+
+      return this.request<DashboardStats>(
+        `/tickets/stats/dashboard?${query.toString()}`
+      );
+    },
+
+    getSalesStats: async (params?: StatsQueryParams): Promise<SalesStats> => {
+      const query = new URLSearchParams();
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+      if (params?.eventId) query.append('eventId', params.eventId);
+
+      return this.request<SalesStats>(
+        `/tickets/stats/sales?${query.toString()}`
+      );
+    },
+
+    getRevenueStats: async (params?: StatsQueryParams): Promise<RevenueStats> => {
+      const query = new URLSearchParams();
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+      if (params?.eventId) query.append('eventId', params.eventId);
+
+      return this.request<RevenueStats>(
+        `/tickets/stats/revenue?${query.toString()}`
+      );
+    },
+
+    getEventAnalytics: async (eventId: string, params?: StatsQueryParams): Promise<EventAnalytics> => {
+      const query = new URLSearchParams();
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+
+      return this.request<EventAnalytics>(
+        `/tickets/stats/events/${eventId}?${query.toString()}`
+      );
+    },
+  };
+
+  // Export endpoints
+  exports = {
+    exportSalesCSV: async (params?: SalesQueryParams): Promise<void> => {
+      const query = new URLSearchParams();
+      if (params?.eventId) query.append('eventId', params.eventId);
+      if (params?.paymentMethod) query.append('paymentMethod', params.paymentMethod);
+      if (params?.startDate) query.append('startDate', params.startDate);
+      if (params?.endDate) query.append('endDate', params.endDate);
+
+      const url = `${this.baseUrl}/tickets/export/sales?${query.toString()}`;
+      const headers: Record<string, string> = {};
+      if (this.token) {
+        headers['Authorization'] = `Bearer ${this.token}`;
+      }
+
+      const response = await fetch(url, { headers });
+      if (!response.ok) {
+        throw new Error('Failed to export sales');
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `sales-export-${new Date().toISOString().split('T')[0]}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+    },
+  };
+}
+
+export const apiClient = new ApiClient(API_BASE_URL);

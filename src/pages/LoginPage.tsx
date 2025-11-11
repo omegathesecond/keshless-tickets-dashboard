@@ -1,0 +1,86 @@
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Ticket } from 'lucide-react';
+import { toast } from 'sonner';
+
+export function LoginPage() {
+  const [credentials, setCredentials] = useState({ identifier: '', password: '' });
+  const [isLoading, setIsLoading] = useState(false);
+  const { login } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    try {
+      await login(credentials);
+      toast.success('Login successful');
+      await new Promise(resolve => setTimeout(resolve, 250));
+      navigate('/', { replace: true });
+    } catch (error: any) {
+      toast.error(error.message || 'Login failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="w-full h-screen flex items-center justify-center bg-gradient-to-br from-orange-50 to-amber-100">
+      <Card className="w-full max-w-md mx-4">
+        <CardHeader className="space-y-4">
+          <div className="flex items-center justify-center">
+            <div className="h-16 w-16 bg-gradient-to-br from-orange-500 to-amber-600 rounded-lg flex items-center justify-center">
+              <Ticket className="h-10 w-10 text-white" />
+            </div>
+          </div>
+          <div className="text-center">
+            <CardTitle className="text-2xl">Keshless Tickets</CardTitle>
+            <CardDescription>Event Ticketing Dashboard</CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="identifier">Email / Phone</Label>
+              <Input
+                id="identifier"
+                placeholder="Enter your email or phone"
+                value={credentials.identifier}
+                onChange={(e) =>
+                  setCredentials({ ...credentials, identifier: e.target.value })
+                }
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                placeholder="Enter your password"
+                value={credentials.password}
+                onChange={(e) =>
+                  setCredentials({ ...credentials, password: e.target.value })
+                }
+                required
+              />
+            </div>
+            <Button
+              type="submit"
+              className="w-full bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700"
+              disabled={isLoading}
+            >
+              {isLoading ? 'Logging in...' : 'Login'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
